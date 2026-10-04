@@ -1,6 +1,6 @@
 import { pgTable, serial, text, integer, timestamp, pgEnum } from "drizzle-orm/pg-core";
 
-export const orderStatus = pgEnum("order_status", ["pending", "paid", "sent_to_lab"]);
+export const orderStatus = pgEnum("order_status", ["pending", "paid", "sent_to_lab", "needs_review"]);
 
 // Photo packages a studio sells on picture day. Prices live here, never in the browser.
 export const packages = pgTable("packages", {

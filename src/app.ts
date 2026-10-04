@@ -62,21 +62,29 @@ app.post("/webhooks/stripe", async (c) => {
     return c.json({ error: "bad signature" }, 400);
   }
 
-  const fresh = await db.insert(stripeEvents).values({ id: event.id, type: event.type })
-    .onConflictDoNothing().returning();
-  if (fresh.length === 0) return c.json({ received: true, duplicate: true });
+  // One all-or-nothing step: record the event and move the order together.
+  // If anything fails, nothing is saved and Stripe's retry gets a clean second try.
+  const result = await db.transaction(async (tx) => {
+    const fresh = await tx.insert(stripeEvents).values({ id: event.id, type: event.type })
+      .onConflictDoNothing().returning();
+    if (fresh.length === 0) return "duplicate";
+    if (event.type !== "checkout.session.completed") return "ignored";
 
-  if (event.type === "checkout.session.completed") {
     const session = event.data.object as Stripe.Checkout.Session;
     const orderId = Number(session.metadata?.orderId);
-    const [order] = await db.select().from(orders).where(eq(orders.id, orderId));
-    if (!order || session.payment_status !== "paid" || session.amount_total !== order.amountCents) {
-      return c.json({ error: "order or amount mismatch" }, 400);
+    const [order] = await tx.select().from(orders).where(eq(orders.id, orderId));
+    if (!order) return "unknown order";
+
+    // A wrong amount is flagged for a person, not bounced back to Stripe
+    // (a 4xx here would make Stripe resend the same event for days).
+    if (session.payment_status !== "paid" || session.amount_total !== order.amountCents) {
+      await tx.update(orders).set({ status: "needs_review" }).where(eq(orders.id, orderId));
+      return "needs review";
     }
-    await db.update(orders).set({ status: "paid" }).where(eq(orders.id, orderId));
     // Hand off to the print lab (a real lab API call would go here).
-    await db.insert(labJobs).values({ orderId }).onConflictDoNothing();
-    await db.update(orders).set({ status: "sent_to_lab" }).where(eq(orders.id, orderId));
-  }
-  return c.json({ received: true });
+    await tx.insert(labJobs).values({ orderId }).onConflictDoNothing();
+    await tx.update(orders).set({ status: "sent_to_lab" }).where(eq(orders.id, orderId));
+    return "sent to lab";
+  });
+  return c.json({ received: true, duplicate: result === "duplicate", result });
 });

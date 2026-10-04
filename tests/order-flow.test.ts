@@ -40,6 +40,18 @@ test("parent orders, pays, and the order goes to the print lab", async () => {
   expect(order.status).toBe("sent_to_lab");
 });
 
+test("a payment for the wrong amount is flagged for review, not sent to the lab", async () => {
+  const res = await app.request("/orders", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ parentEmail: "parent@example.com", studentName: "Ben", school: "Pier Ave", packageId: 1 }) });
+  const { orderId } = await res.json();
+  const event = { id: `evt_test_wrong_${orderId}_${Date.now()}`, type: "checkout.session.completed",
+    data: { object: { metadata: { orderId: String(orderId) }, payment_status: "paid", amount_total: 100 } } };
+  const hook = await app.request("/webhooks/stripe", await signed(event));
+  expect(hook.status).toBe(200);
+  const order = await (await app.request(`/orders/${orderId}`)).json();
+  expect(order.status).toBe("needs_review");
+});
+
 test("a bad order is refused before it reaches Stripe", async () => {
   const res = await app.request("/orders", { method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ parentEmail: "not-an-email", studentName: "", school: "x", packageId: 1 }) });
